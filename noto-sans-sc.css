@@ -1,0 +1,8 @@
+/* Noto Sans SC - Google Fonts 本地化 (完整可变字体) */
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url(NotoSansSC.ttf) format('truetype');
+}

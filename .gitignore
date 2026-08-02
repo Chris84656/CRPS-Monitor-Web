@@ -1,0 +1,8 @@
+# 设计文档
+*.md
+stitch_prompt.md
+
+# 本地服务器
+server.js
+start-server.bat
+node_modules/

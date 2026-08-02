@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>CRPS 电源监控</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%230071e3'/></svg>">
+<link rel="stylesheet" href="material-symbols.css">
+<link rel="stylesheet" href="noto-sans-sc.css">
+<link rel="stylesheet" href="jetbrains-mono.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ===== Main Content ===== -->
+<div id="app">
+
+  <!-- ===== Top Nav Bar ===== -->
+  <header id="top-nav" class="liquid-glass-nav">
+    <div class="nav-left">
+      <span class="brand-icon material-symbols-outlined">electric_bolt</span>
+      <span class="brand-text">CRPS 智能电源监控系统</span>
+
+      <div class="nav-controls">
+        <div class="status-indicator" id="status-indicator">
+          <span class="status-dot" id="status-dot"></span>
+          <span class="status-text" id="status-text">未连接</span>
+        </div>
+
+        <div class="power-switch disabled" id="power-switch">
+          <div class="switch-track" id="switch-track">
+            <div class="switch-knob" id="switch-knob"></div>
+          </div>
+        </div>
+
+        <button class="connect-btn" id="btn-connect">
+          <span class="material-symbols-outlined">bluetooth</span>
+          <span id="btn-connect-text">连接设备</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="nav-center">
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="monitor">实时监控</button>
+        <button class="tab-btn" data-tab="device">设备信息</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <main id="main-content">
+
+    <!-- Disconnected View -->
+    <div id="disconnected-view" class="view">
+      <div class="disconnected-card liquid-glass">
+        <button class="btn-connect-large" id="btn-connect-large">
+          <span class="material-symbols-outlined">bluetooth</span>
+          连接设备
+        </button>
+        <div class="guidance">
+          <div class="guidance-item">
+            <span class="material-symbols-outlined guidance-icon">devices</span>
+            <div>
+              <div class="guidance-title">浏览器兼容</div>
+              <div class="guidance-desc">请使用 Chrome 或 Edge 浏览器，iOS Safari 不支持</div>
+            </div>
+          </div>
+          <div class="guidance-item">
+            <span class="material-symbols-outlined guidance-icon">bluetooth_searching</span>
+            <div>
+              <div class="guidance-title">设备选择</div>
+              <div class="guidance-desc">点击连接后选择您的 CRPS Monitor 设备</div>
+            </div>
+          </div>
+          <div class="guidance-item">
+            <span class="material-symbols-outlined guidance-icon">usb</span>
+            <div>
+              <div class="guidance-title">BLE 需求</div>
+              <div class="guidance-desc">电脑需支持蓝牙或使用 USB 蓝牙适配器</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connecting View (overlay) -->
+    <div id="connecting-view" class="view hidden">
+      <div class="spinner-overlay">
+        <div class="spinner"></div>
+        <div class="spinner-text">连接中…</div>
+      </div>
+    </div>
+
+    <!-- ===== TAB 1: 实时监控 ===== -->
+    <div id="tab-monitor" class="tab-content active">
+      <div class="monitor-grid">
+        <!-- Left Column: Data Cards -->
+        <div class="col-left">
+          <div class="data-card liquid-glass" data-group="input">
+            <div class="card-header">
+              <span class="material-symbols-outlined card-icon">bolt</span>
+              <span class="card-title">输入 (V/A)</span>
+            </div>
+            <div class="card-field"><span class="field-label">输入电压</span><span class="field-value" data-field="vin">--</span><span class="field-unit">V</span></div>
+            <div class="card-field"><span class="field-label">输入电流</span><span class="field-value" data-field="iin">--</span><span class="field-unit">A</span></div>
+          </div>
+
+          <div class="data-card liquid-glass" data-group="output">
+            <div class="card-header">
+              <span class="material-symbols-outlined card-icon">electric_meter</span>
+              <span class="card-title">输出 (V/A/W/%)</span>
+            </div>
+            <div class="card-field"><span class="field-label">输出电压</span><span class="field-value" data-field="vout">--</span><span class="field-unit">V</span></div>
+            <div class="card-field"><span class="field-label">输出电流</span><span class="field-value" data-field="iout">--</span><span class="field-unit">A</span></div>
+            <div class="card-field"><span class="field-label">输出功率</span><span class="field-value" data-field="pout">--</span><span class="field-unit">W</span></div>
+            <div class="card-field"><span class="field-label">效率</span><span class="field-value" data-field="eff">--</span><span class="field-unit">%</span></div>
+          </div>
+
+          <div class="data-card liquid-glass" data-group="temp">
+            <div class="card-header">
+              <span class="material-symbols-outlined card-icon">thermostat</span>
+              <span class="card-title">温度 (°C)</span>
+            </div>
+            <div class="card-field"><span class="field-label">环境温度</span><span class="field-value" data-field="t1">--</span><span class="field-unit">°C</span></div>
+            <div class="card-field"><span class="field-label">热点温度</span><span class="field-value" data-field="t2">--</span><span class="field-unit">°C</span></div>
+          </div>
+
+          <div class="data-card liquid-glass" data-group="fan">
+            <div class="card-header">
+              <span class="material-symbols-outlined card-icon">mode_fan</span>
+              <span class="card-title">风扇 (RPM)</span>
+            </div>
+            <div class="card-field"><span class="field-label">风扇转速</span><span class="field-value" data-field="fan">--</span><span class="field-unit">RPM</span></div>
+          </div>
+
+          <div class="data-card liquid-glass" data-group="runtime">
+            <div class="card-header">
+              <span class="material-symbols-outlined card-icon">schedule</span>
+              <span class="card-title">运行</span>
+            </div>
+            <div class="card-field"><span class="field-label">运行时间</span><span class="field-value" data-field="rt">--</span></div>
+            <div class="card-field"><span class="field-label">电源状态</span><span class="field-value" data-field="pwr" id="field-pwr">--</span></div>
+          </div>
+        </div>
+
+        <!-- Right Column: Charts + Status -->
+        <div class="col-right">
+          <div class="chip-bar" id="chip-bar"></div>
+          <div class="chart-grid" id="chart-grid"></div>
+          <div class="status-card-simple liquid-glass" id="status-card-simple">
+            <div class="status-bar" id="status-bar">
+              <span class="status-bar-text" id="status-bar-text">正常</span>
+            </div>
+            <div class="status-reg-grid">
+              <div class="status-reg-cell">
+                <span class="material-symbols-outlined reg-icon">bolt</span>
+                <span class="reg-label">输出电流</span>
+                <span class="reg-value" data-field="si">0x00</span>
+              </div>
+              <div class="status-reg-cell">
+                <span class="material-symbols-outlined reg-icon">power</span>
+                <span class="reg-label">输入状态</span>
+                <span class="reg-value" data-field="sn">0x00</span>
+              </div>
+              <div class="status-reg-cell">
+                <span class="material-symbols-outlined reg-icon">thermostat</span>
+                <span class="reg-label">热状态</span>
+                <span class="reg-value" data-field="st">0x00</span>
+              </div>
+              <div class="status-reg-cell">
+                <span class="material-symbols-outlined reg-icon">mode_fan</span>
+                <span class="reg-label">风扇状态</span>
+                <span class="reg-value" data-field="sf">0x00</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== TAB 2: 设备信息 ===== -->
+    <div id="tab-device" class="tab-content">
+      <div class="device-grid">
+        <div class="device-col-left">
+          <div class="device-card liquid-glass">
+            <div class="device-card-header">
+              <div class="device-header-icon">
+                <span class="material-symbols-outlined">memory</span>
+              </div>
+              <span class="device-header-title">硬件元数据</span>
+            </div>
+            <div class="device-table">
+              <div class="device-row"><span class="device-label">制造商</span><span class="device-value" data-field="mid">加载中…</span></div>
+              <div class="device-row"><span class="device-label">型号</span><span class="device-value" data-field="mm">加载中…</span></div>
+              <div class="device-row"><span class="device-label">修订版本</span><span class="device-value" data-field="mrev">加载中…</span></div>
+              <div class="device-row"><span class="device-label">序列号</span><span class="device-value" data-field="msn">加载中…</span></div>
+              <div class="device-row"><span class="device-label">产地</span><span class="device-value" data-field="mloc">加载中…</span></div>
+              <div class="device-row"><span class="device-label">生产日期</span><span class="device-value" data-field="mdate">加载中…</span></div>
+              <div class="device-row"><span class="device-label">PMBus版本</span><span class="device-value" data-field="prev">加载中…</span></div>
+              <div class="device-row"><span class="device-label">最大输出电流</span><span class="device-value" data-field="rimax">加载中…</span></div>
+              <div class="device-row"><span class="device-label">最大输出功率</span><span class="device-value" data-field="rpmax">加载中…</span></div>
+              <div class="device-row"><span class="device-label">最大温度1</span><span class="device-value" data-field="rt1">加载中…</span></div>
+              <div class="device-row"><span class="device-label">最大温度2</span><span class="device-value" data-field="rt2">加载中…</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="device-col-right">
+          <div class="device-card liquid-glass">
+            <div class="device-card-header">
+              <div class="device-header-icon">
+                <span class="material-symbols-outlined">fact_check</span>
+              </div>
+              <span class="device-header-title">状态寄存器</span>
+            </div>
+            <div class="reg-groups-grid" id="reg-groups-grid">
+              <div class="reg-group" data-field="si">
+                <div class="reg-group-header">
+                  <span class="material-symbols-outlined reg-group-icon">bolt</span>
+                  <span class="reg-group-name">输出电流状态</span>
+                </div>
+                <div class="reg-group-value" id="reg-val-si">0x00</div>
+                <div class="reg-chip" id="reg-chip-si">
+                  <span class="chip-dot"></span>
+                  <span class="chip-text">正常 (0x00)</span>
+                </div>
+              </div>
+              <div class="reg-group" data-field="sn">
+                <div class="reg-group-header">
+                  <span class="material-symbols-outlined reg-group-icon">power</span>
+                  <span class="reg-group-name">输入状态</span>
+                </div>
+                <div class="reg-group-value" id="reg-val-sn">0x00</div>
+                <div class="reg-chip" id="reg-chip-sn">
+                  <span class="chip-dot"></span>
+                  <span class="chip-text">正常 (0x00)</span>
+                </div>
+              </div>
+              <div class="reg-group" data-field="st">
+                <div class="reg-group-header">
+                  <span class="material-symbols-outlined reg-group-icon">thermostat</span>
+                  <span class="reg-group-name">热状态</span>
+                </div>
+                <div class="reg-group-value" id="reg-val-st">0x00</div>
+                <div class="reg-chip" id="reg-chip-st">
+                  <span class="chip-dot"></span>
+                  <span class="chip-text">正常 (0x00)</span>
+                </div>
+              </div>
+              <div class="reg-group" data-field="sf">
+                <div class="reg-group-header">
+                  <span class="material-symbols-outlined reg-group-icon">mode_fan</span>
+                  <span class="reg-group-name">风扇状态</span>
+                </div>
+                <div class="reg-group-value" id="reg-val-sf">0x00</div>
+                <div class="reg-chip" id="reg-chip-sf">
+                  <span class="chip-dot"></span>
+                  <span class="chip-text">正常 (0x00)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ===== Toast Container ===== -->
+<div id="toast-container"></div>
+
+<!-- ===== Modal Overlay ===== -->
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-title" id="modal-title">提示</div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-actions" id="modal-actions"></div>
+  </div>
+</div>
+
+<!-- ===== Scripts ===== -->
+<script src="echarts.min.js"></script>
+<script src="background.js"></script>
+<script src="app.js"></script>
+<script src="chart.js"></script>
+</body>
+</html>
