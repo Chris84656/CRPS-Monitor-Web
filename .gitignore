@@ -1,6 +1,8 @@
-# 设计文档
+# 设计文档（不入库）
 *.md
+!README.md
 stitch_prompt.md
+CRPS_Web_Design_Prompt.md
 
 # 本地服务器
 server.js
