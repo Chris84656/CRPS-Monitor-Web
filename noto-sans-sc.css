@@ -1,8 +1,9 @@
-/* Noto Sans SC - Google Fonts 本地化 (完整可变字体) */
+/* Noto Sans SC - 本地子集化（仅包含页面使用到的字符，294KB）
+   如需扩充字符集，用 font-subset-chars.txt 重新执行子集化 */
 @font-face {
   font-family: 'Noto Sans SC';
   font-style: normal;
   font-weight: 300 700;
   font-display: swap;
-  src: url(NotoSansSC.ttf) format('truetype');
+  src: url(NotoSansSC-subset.ttf) format('truetype');
 }

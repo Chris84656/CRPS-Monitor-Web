@@ -83,20 +83,66 @@ var bleState = {
   runtimeTimer: null
 };
 
+// ===== 4b. UI State (Motion) =====
+var uiState = {
+  reduceMotion: false,
+  current: 'disconnected'
+};
+
+// 风扇图标上一次的旋转时长（避免每帧重复写 style）
+var lastFanDuration = -1;
+
 // ===== 5. Tab Switching =====
-function switchTab(tabId) {
+function performTabSwitch(tabId) {
   dom.tabButtons.forEach(function(btn) {
     btn.classList.toggle('active', btn.dataset.tab === tabId);
   });
   dom.tabMonitor.classList.toggle('active', tabId === 'monitor');
   dom.tabDevice.classList.toggle('active', tabId === 'device');
+  moveTabIndicator();
+}
 
-  // Trigger chart resize when switching to monitor tab
-  if (tabId === 'monitor' && window.__crpsCharts) {
-    setTimeout(function() {
-      window.__crpsCharts.forEach(function(c) { if (c) c.resize(); });
-    }, 100);
+function switchTab(tabId) {
+  // 直接切换：View Transitions 会把半透明玻璃卡片单独快照，
+  // 快照时 backdrop-filter 失效、遮罩闪到错误位置，并短暂覆盖 sticky 状态栏，故停用 VT。
+  performTabSwitch(tabId);
+}
+
+// ===== 5b. Tab Indicator (Motion 弹簧滑动) =====
+var tabIndicator = document.createElement('div');
+tabIndicator.className = 'tab-indicator';
+var tabBarEl = document.querySelector('.tab-bar');
+if (tabBarEl) tabBarEl.appendChild(tabIndicator);
+
+function moveTabIndicator(animate) {
+  var activeBtn = document.querySelector('.tab-btn.active');
+  if (!activeBtn || !tabBarEl) return;
+  var left = activeBtn.offsetLeft;
+  var w = activeBtn.offsetWidth;
+
+  if (animate !== false && window.Motion && window.Motion.animate && !uiState.reduceMotion) {
+    var curLeft = parseFloat(tabIndicator.style.left);
+    var curW = parseFloat(tabIndicator.style.width);
+    if (isNaN(curLeft)) curLeft = left;
+    if (isNaN(curW)) curW = w;
+    window.Motion.animate(tabIndicator,
+      { left: [curLeft, left], width: [curW, w] },
+      { type: 'spring', visualDuration: 0.45, bounce: 0.18 });
+  } else {
+    tabIndicator.style.left = left + 'px';
+    tabIndicator.style.width = w + 'px';
   }
+}
+
+// 连接成功后监控卡片错峰入场
+function animateMonitorEnter() {
+  if (uiState.reduceMotion || !window.Motion || !window.Motion.animate) return;
+  var cards = document.querySelectorAll('#tab-monitor .data-card, #tab-monitor .chart-card, #tab-monitor .status-card-simple');
+  cards.forEach(function(card, i) {
+    window.Motion.animate(card,
+      { opacity: [0, 1], y: [16, 0] },
+      { duration: 0.5, delay: 0.05 + i * 0.045, easing: 'easeOut' });
+  });
 }
 
 dom.tabButtons.forEach(function(btn) {
@@ -173,27 +219,38 @@ function updateDataCards() {
   Object.keys(fields).forEach(function(key) {
     var el = document.querySelector('[data-field="' + key + '"]');
     if (el) {
-      var oldVal = el.textContent;
       el.textContent = fields[key];
-
-      // Flash effect on numeric change
-      if (key !== 'rt' && key !== 'pwr' && oldVal !== fields[key]) {
-        var card = el.closest('.data-card');
-        if (card) {
-          card.classList.remove('value-flash');
-          // Force reflow
-          void card.offsetWidth;
-          card.classList.add('value-flash');
-        }
-      }
     }
   });
+
+  // 风扇图标转速度随 RPM 联动（仅在时长变化时写入，避免每帧样式抖动）
+  var fanIcon = document.getElementById('fan-icon');
+  if (fanIcon) {
+    var rpm = d.fan || 0;
+    if (rpm > 0) {
+      var dur = Math.round(Math.min(2.5, Math.max(0.35, 9000 / rpm)) * 10) / 10;
+      if (lastFanDuration !== dur) {
+        lastFanDuration = dur;
+        fanIcon.style.setProperty('--fan-duration', dur.toFixed(1) + 's');
+      }
+      fanIcon.classList.add('spinning');
+    } else {
+      fanIcon.classList.remove('spinning');
+    }
+  }
 
   // Power status color
   var pwrEl = document.getElementById('field-pwr');
   if (pwrEl) {
     pwrEl.style.color = d.pwr === 1 ? 'var(--success)' : 'var(--text-secondary)';
   }
+}
+
+// 状态寄存器"正常"判定：0x00 恒为正常；风扇状态 0xA200 为风扇正常运转的特定编码
+function isStatusAlert(key, val) {
+  if (val === 0) return false;
+  if (key === 'sf' && val === 0xA200) return false;
+  return true;
 }
 
 // ===== 11. Status Register Update (Simplified) =====
@@ -207,7 +264,7 @@ function updateStatusSimple() {
     if (el) {
       el.textContent = '0x' + (regs[key] < 16 ? '0' : '') + (regs[key] || 0).toString(16).toUpperCase();
     }
-    if (regs[key] !== 0) hasAlert = true;
+    if (isStatusAlert(key, regs[key])) hasAlert = true;
   });
 
   dom.statusBar.classList.toggle('alert', hasAlert);
@@ -254,7 +311,7 @@ function updateStatusDetailed() {
     var chipEl = document.getElementById('reg-chip-' + key);
     if (valEl) valEl.textContent = hex;
     if (chipEl) {
-      var isAlert = regs[key] !== 0;
+      var isAlert = isStatusAlert(key, regs[key]);
       chipEl.classList.toggle('alert', isAlert);
       var dot = chipEl.querySelector('.chip-dot');
       var text = chipEl.querySelector('.chip-text');
@@ -303,15 +360,9 @@ function parsePacket(chunk) {
       // Discard invalid JSON and continue
     }
   }
-
-  if (!processed && chunk.length > 0) {
-    // Data received but no complete JSON yet
-    console.log('[CRPS] Incomplete packet, buffer length:', bleState.packetBuffer.length);
-  }
 }
 
 function handleData(obj) {
-  console.log('[CRPS] handleData keys:', Object.keys(obj).join(','), 'vin=' + obj.vin, 'vout=' + obj.vout, 'mid=' + obj.mid);
   // Check if dynamic or static
   if ('vin' in obj || 'vout' in obj) {
     // Dynamic data
@@ -339,9 +390,10 @@ function handleData(obj) {
       updateStatusSimple();
       updateStatusDetailed();
 
-      // Sync switch position with pwr data (skip for 800ms after manual toggle)
-      if (obj.pwr !== undefined) {
-        if (Date.now() - switchState.lastManualToggle < 800) return;
+      // 同步开关位置（手动切换后 800ms 冷却期内不覆盖用户操作）
+      // 注意：仅跳过开关同步，不能提前 return 影响后续静态数据与图表更新
+      var skipSwitchSync = obj.pwr !== undefined && (Date.now() - switchState.lastManualToggle < 800);
+      if (obj.pwr !== undefined && !skipSwitchSync) {
         var currentPos = switchState.position;
         var targetPos = obj.pwr === 1 ? 'on' : 'off';
         if (currentPos !== targetPos) {
@@ -440,28 +492,7 @@ function startConnection() {
       }
     }
 
-    // 注册事件监听（读取数据时更新）
-    bleState.charDynamic.addEventListener('characteristicvaluechanged', function(ev) {
-      var text = charValueToString(ev.target.value);
-      if (text) {
-        console.log('[CRPS] Dynamic data received, length:', text.length);
-        parsePacket(text);
-      } else {
-        console.warn('[CRPS] Dynamic data empty or undecodable');
-      }
-    });
-    bleState.charStatic.addEventListener('characteristicvaluechanged', function(ev) {
-      var text = charValueToString(ev.target.value);
-      if (text) {
-        console.log('[CRPS] Static data received, length:', text.length);
-        parsePacket(text);
-      } else {
-        console.warn('[CRPS] Static data empty or undecodable');
-      }
-    });
-
-    // 改用定时读取（Polling）替代 Notify，避免通知兼容性问题
-    // 动态数据 250ms 轮询，静态数据 5s 轮询
+    // 数据读取：dynamic 250ms 轮询，static 5s 轮询（轮询比 notify 更稳，且无需 startNotifications）
     function readDynamicChar() {
       if (!bleState.charDynamic || !bleState.connected) return;
       bleState.charDynamic.readValue()
@@ -571,6 +602,7 @@ function onDisconnected() {
   window.__crpsIndicatorKeys.forEach(function(key) {
     window.__crpsDataBuffers[key] = [];
   });
+  if (window.__crpsResetCharts) window.__crpsResetCharts();
 
   updateUIState('disconnected');
 
@@ -613,12 +645,11 @@ function stopRuntimeCounter() {
 }
 
 // ===== 17. UI State Update =====
-function updateUIState(state) {
+function applyUIState(state) {
   var dot = dom.statusDot;
   var text = dom.statusText;
   var btn = dom.btnConnect;
   var btnText = dom.btnConnectText;
-  var btnLarge = dom.btnConnectLarge;
   var switchEl = dom.powerSwitch;
 
   // Reset dot classes
@@ -656,6 +687,7 @@ function updateUIState(state) {
       switchEl.classList.remove('disabled');
       dom.disconnectedView.style.display = 'none';
       dom.tabMonitor.classList.add('active');
+      animateMonitorEnter();
       break;
 
     case 'alert':
@@ -665,8 +697,14 @@ function updateUIState(state) {
   }
 }
 
+function updateUIState(state) {
+  uiState.current = state;
+  // 停用 View Transitions，避免半透明玻璃卡片快照闪烁、状态栏被短暂覆盖。
+  applyUIState(state);
+}
+
 // ===== 18. Power Switch (Apple-style Toggle) =====
-var switchState = { position: 'on', lastManualToggle: 0 };
+var switchState = { position: 'off', lastManualToggle: 0 };
 
 function setSwitchPosition(pos) {
   switchState.position = pos;
@@ -755,5 +793,20 @@ dom.btnConnectLarge.addEventListener('click', function() {
   }
 })();
 
-// ===== 23. Init =====
+// ===== 23. Reduced Motion & Resize =====
+(function() {
+  var mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+  uiState.reduceMotion = mq.matches;
+  if (mq.addEventListener) {
+    mq.addEventListener('change', function() { uiState.reduceMotion = mq.matches; });
+  }
+})();
+
+// Tab 指示器随窗口尺寸重定位
+window.addEventListener('resize', function() {
+  moveTabIndicator(false);
+});
+
+// ===== 24. Init =====
 updateUIState('disconnected');
+moveTabIndicator(false);

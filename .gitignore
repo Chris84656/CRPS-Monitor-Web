@@ -1,6 +1,7 @@
-# 设计文档（不入库）
+# 设计文档（不入库；README 与更新日志除外）
 *.md
 !README.md
+!CHANGELOG.md
 stitch_prompt.md
 CRPS_Web_Design_Prompt.md
 
@@ -8,3 +9,7 @@ CRPS_Web_Design_Prompt.md
 server.js
 start-server.bat
 node_modules/
+
+# 固件与设计素材（不开源）
+c3代码/
+图标.png

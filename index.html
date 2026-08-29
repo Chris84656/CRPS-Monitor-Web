@@ -128,7 +128,7 @@
 
           <div class="data-card liquid-glass" data-group="fan">
             <div class="card-header">
-              <span class="material-symbols-outlined card-icon">mode_fan</span>
+              <span class="material-symbols-outlined card-icon" id="fan-icon">mode_fan</span>
               <span class="card-title">风扇 (RPM)</span>
             </div>
             <div class="card-field"><span class="field-label">风扇转速</span><span class="field-value" data-field="fan">--</span><span class="field-unit">RPM</span></div>
@@ -281,7 +281,8 @@
 </div>
 
 <!-- ===== Scripts ===== -->
-<script src="echarts.min.js"></script>
+<script src="vendor/lightweight-charts.standalone.production.js"></script>
+<script src="vendor/motion.js"></script>
 <script src="background.js"></script>
 <script src="app.js"></script>
 <script src="chart.js"></script>
