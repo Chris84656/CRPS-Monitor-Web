@@ -31,7 +31,9 @@
 - **图表**：Lightweight Charts v5（本地引入 `vendor/`）
 - **动效**：Motion（本地引入 `vendor/`），弹簧 tab 指示器与卡片入场
 - **字体**：Noto Sans SC（子集化）、JetBrains Mono、Material Symbols（全部本地化）
-- **通信**：Web Bluetooth（BLE），JSON 数据经 BLE MTU ≥ 247 分包传输
+- **通信**：Web Bluetooth 的完整 GATT Read（动态250 ms、静态5秒轮询）；本网页不订阅 Notify，也不要求 MTU ≥247。
+- 控制特征支持 Read 时，先读取以完成固件可能要求的配对。兼容可选 `proto:1/seq/valid/ack`，失败字段为未知；支持 `ack` 时匹配本次命令回执和目标状态才结束等待；无 `ack` 时保留单字节命令，只能观察写后状态。客户端不提供设备端认证保障，仍需固件支持。
+- 失去新动态样本10秒后主卡片及图表当前值清空、控制禁用。带静态采样序号的固件45秒不更新身份会过期。
 
 ## 🚀 本地运行
 
@@ -49,10 +51,20 @@ npx serve .
 
 ## ☁️ 部署
 
-推送到 `main` 分支后自动部署：
+部署入口（是否自动发布以维护者实际配置为准）：
 
-- **GitHub Pages**：从 `main` 分支根目录构建发布
-- **Cloudflare Pages**：已关联本仓库 `main` 分支，推送即自动构建上线
+- **GitHub Pages**：可从 `main` 分支根目录构建发布
+- **Cloudflare Pages**：可关联仓库分支，在推送后自动构建上线
+
+## 回归验证
+
+使用支持 `node:test` 的 Node.js 运行，无需安装 npm 依赖：
+
+```sh
+node --test tests/ble.test.cjs
+```
+
+测试执行实际 `app.js` / `chart.js`，以 GATT、DOM 和时钟替身覆盖会话隔离、串行读写、失败清理、严格解析、过期、命令回执和旧协议兼容。它不证明真实浏览器配对、无线传输或最终视觉效果；合并前仍需维护者使用原版及支持扩展的设备分别联调。
 
 ## 📂 目录结构
 

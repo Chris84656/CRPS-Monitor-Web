@@ -263,7 +263,7 @@ function initChart(key, tooltip) {
     baseLineVisible: false,
     autoscaleInfoProvider: function(original) {
       var vals = [];
-      for (var i = 0; i < inst.data.length; i++) vals.push(inst.data[i].value);
+      for (var i = 0; i < inst.data.length; i++) if (Number.isFinite(inst.data[i].value)) vals.push(inst.data[i].value);
       if (vals.length === 0) return (typeof original === 'function' && original()) || null;
 
       var mn = Infinity, mx = -Infinity;
@@ -315,7 +315,7 @@ function initChart(key, tooltip) {
     }
     var val = param.seriesData.get(series);
     container.style.cursor = 'crosshair';
-    if (val === undefined) {
+    if (!val || !Number.isFinite(val.value)) {
       tooltip.style.display = 'none';
       return;
     }
@@ -393,7 +393,8 @@ function consumeBuffer(inst) {
       if (inst.bucketSec !== null) {
         // 指数平滑去毛刺：新点 = 旧平滑值 + α×(新值 - 旧平滑值)
         var alpha = SMOOTH_ALPHA[inst.key] || SMOOTH_ALPHA_DEFAULT;
-        if (inst.ema === null) inst.ema = inst.bucketValue;
+        if (!Number.isFinite(inst.bucketValue)) inst.ema = null;
+        else if (inst.ema === null) inst.ema = inst.bucketValue;
         else {
           var dev = Math.abs(inst.bucketValue - inst.ema);
           var snapTh = Math.max(Math.abs(inst.ema) * SNAP_RATIO, SNAP_MIN_ABS);
@@ -404,7 +405,7 @@ function consumeBuffer(inst) {
             inst.ema = inst.ema + alpha * (inst.bucketValue - inst.ema);
           }
         }
-        inst.data.push({ time: inst.bucketSec, value: inst.ema });
+        inst.data.push(inst.ema === null ? { time: inst.bucketSec } : { time: inst.bucketSec, value: inst.ema });
       }
       inst.bucketSec = sec;
       inst.bucketValue = raw[1];
@@ -419,7 +420,7 @@ function consumeBuffer(inst) {
 // ===== 6. 窗口跟随（同步锁定右边缘，避免补间与更新周期冲突导致曲线抽动） =====
 function followTimeRange(inst) {
   // 无数据时 LWC 的 setVisibleRange 会触发内部断言，直接跳过
-  if (!inst.data.length) return;
+  if (!inst.data.some(function(point) { return Number.isFinite(point.value); })) return;
 
   var ts = inst.chart.timeScale();
   var nowSec = Date.now() / 1000;
@@ -440,6 +441,8 @@ function followTimeRange(inst) {
 function updateCharts() {
   chartState.selectedIndicators.forEach(function(key) {
     var inst = chartState.chartInstances[key];
+    var curValEl = document.getElementById('curval-' + key);
+    if (curValEl && !bleState.dataFresh) curValEl.textContent = '--';
     if (!inst || chartState.paused[key]) return;
 
     consumeBuffer(inst);
@@ -450,10 +453,9 @@ function updateCharts() {
     followTimeRange(inst);
 
     // 头部当前值
-    var curValEl = document.getElementById('curval-' + key);
     if (curValEl && inst.data.length) {
       var last = inst.data[inst.data.length - 1];
-      curValEl.textContent = formatValue(key, last.value);
+      curValEl.textContent = bleState.dataFresh && Number.isFinite(last.value) ? formatValue(key, last.value) : '--';
     }
     if (curValEl && !inst.data.length) curValEl.textContent = '--';
   });
@@ -481,6 +483,8 @@ window.__crpsOnDataUpdate = function() {
 // 断开连接时清空图表
 window.__crpsResetCharts = function() {
   Object.keys(chartState.chartInstances).forEach(function(key) {
+    var curValEl = document.getElementById('curval-' + key);
+    if (curValEl) curValEl.textContent = '--';
     var inst = chartState.chartInstances[key];
     if (!inst) return;
     inst.lastConsumedT = -Infinity;

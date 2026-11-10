@@ -10,26 +10,20 @@ const BLE_CHAR_CONTROL = '00002a57-0000-1000-8000-00805f9b34fb';
 const DEVICE_NAME_PREFIX = 'CRPS Monitor_';
 
 // ===== 2. Data Model =====
-const dataModel = {
-  dynamic: {
-    vin: 0, iin: 0, vout: 0, iout: 0, pout: 0, eff: 0,
-    fan: 0, t1: 0, t2: 0, rt: 0, pwr: 0,
-    si: 0, sn: 0, st: 0, sf: 0
-  },
-  static: {
-    mid: '', mm: '', mrev: '', msn: '', mloc: '', mdate: '',
-    prev: 0, rimax: 0, rpmax: 0, rt1: 0, rt2: 0,
-    received: false
-  },
-  prevDynamic: {}
-};
+const DYNAMIC_FIELDS = ['vin','iin','vout','iout','pout','eff','fan','t1','t2','rt','pwr','si','sn','st','sf'];
+const STATIC_TEXT_FIELDS = ['mid','mm','mrev','msn','mloc','mdate'];
+const STATIC_NUMBER_FIELDS = ['prev','rimax','rpmax','rt1','rt2'];
+const MAX_PACKET_BYTES = 1024;
+const DATA_TIMEOUT_MS = 10000;
+const STATIC_TIMEOUT_MS = 15000;
+const dataModel = { dynamic: {}, static: { received: false } };
 
 // Chart data buffers (shared with chart.js)
 window.__crpsDataBuffers = {};
 window.__crpsIndicatorKeys = ['vin','iin','vout','iout','pout','eff','fan','t1','t2'];
 window.__crpsIndicatorLabels = {
   vin:'输入电压 (V)', iin:'输入电流 (A)', vout:'输出电压 (V)', iout:'输出电流 (A)',
-  pout:'输出功率 (W)', eff:'效率 (%)', fan:'风扇转速 (RPM)', t1:'环境温度 (°C)', t2:'热点温度 (°C)'
+  pout:'输出功率 (W)', eff:'估算效率 (%)', fan:'风扇转速 (RPM)', t1:'环境温度 (°C)', t2:'热点温度 (°C)'
 };
 window.__crpsIndicatorColors = {
   vin:'#3B82F6', iin:'#FBBF24', vout:'#00D9FF', iout:'#EC4899',
@@ -68,19 +62,10 @@ var dom = {
 
 // ===== 4. State =====
 var bleState = {
-  device: null,
-  server: null,
-  service: null,
-  charDynamic: null,
-  charStatic: null,
-  charControl: null,
+  session: null,
   connected: false,
   connecting: false,
-  connectTimeout: null,
-  packetBuffer: '',
-  staticDataReceived: false,
-  staticDataTimer: null,
-  runtimeTimer: null
+  dataFresh: false
 };
 
 // ===== 4b. UI State (Motion) =====
@@ -202,18 +187,21 @@ function formatRuntime(seconds) {
 // ===== 10. Data Card Update =====
 function updateDataCards() {
   var d = dataModel.dynamic;
+  function reading(key, digits) {
+    return bleState.dataFresh && Number.isFinite(d[key]) ? d[key].toFixed(digits) : '--';
+  }
   var fields = {
-    vin: d.vin.toFixed(2),
-    iin: d.iin.toFixed(2),
-    vout: d.vout.toFixed(2),
-    iout: d.iout.toFixed(2),
-    pout: d.pout.toFixed(1),
-    eff: d.eff.toFixed(1),
-    fan: Math.round(d.fan),
-    t1: d.t1.toFixed(1),
-    t2: d.t2.toFixed(1),
-    rt: formatRuntime(d.rt),
-    pwr: d.pwr === 1 ? 'ON' : 'OFF'
+    vin: reading('vin', 2),
+    iin: reading('iin', 2),
+    vout: reading('vout', 2),
+    iout: reading('iout', 2),
+    pout: reading('pout', 1),
+    eff: reading('eff', 1),
+    fan: reading('fan', 0),
+    t1: reading('t1', 1),
+    t2: reading('t2', 1),
+    rt: bleState.dataFresh ? formatRuntime(d.rt) : '--',
+    pwr: bleState.dataFresh ? (d.pwr === 1 ? 'ON' : 'OFF') : '--'
   };
 
   Object.keys(fields).forEach(function(key) {
@@ -226,7 +214,7 @@ function updateDataCards() {
   // 风扇图标转速度随 RPM 联动（仅在时长变化时写入，避免每帧样式抖动）
   var fanIcon = document.getElementById('fan-icon');
   if (fanIcon) {
-    var rpm = d.fan || 0;
+    var rpm = bleState.dataFresh && Number.isFinite(d.fan) ? d.fan : 0;
     if (rpm > 0) {
       var dur = Math.round(Math.min(2.5, Math.max(0.35, 9000 / rpm)) * 10) / 10;
       if (lastFanDuration !== dur) {
@@ -242,7 +230,7 @@ function updateDataCards() {
   // Power status color
   var pwrEl = document.getElementById('field-pwr');
   if (pwrEl) {
-    pwrEl.style.color = d.pwr === 1 ? 'var(--success)' : 'var(--text-secondary)';
+    pwrEl.style.color = bleState.dataFresh && d.pwr === 1 ? 'var(--success)' : 'var(--text-secondary)';
   }
 }
 
@@ -257,24 +245,25 @@ function isStatusAlert(key, val) {
 function updateStatusSimple() {
   var d = dataModel.dynamic;
   var regs = { si: d.si, sn: d.sn, st: d.st, sf: d.sf };
+  var readable = bleState.dataFresh;
   var hasAlert = false;
 
   Object.keys(regs).forEach(function(key) {
     var el = document.querySelector('.status-reg-cell .reg-value[data-field="' + key + '"]');
     if (el) {
-      el.textContent = '0x' + (regs[key] < 16 ? '0' : '') + (regs[key] || 0).toString(16).toUpperCase();
+      el.textContent = readable && Number.isInteger(regs[key]) ? '0x' + regs[key].toString(16).toUpperCase().padStart(2, '0') : '--';
     }
-    if (isStatusAlert(key, regs[key])) hasAlert = true;
+    if (readable && Number.isInteger(regs[key]) && isStatusAlert(key, regs[key])) hasAlert = true;
   });
 
-  dom.statusBar.classList.toggle('alert', hasAlert);
-  dom.statusBarText.textContent = hasAlert ? '告警' : '正常';
+  dom.statusBar.classList.toggle('alert', !readable || d.valid === false || hasAlert);
+  dom.statusBarText.textContent = !bleState.dataFresh ? '等待有效数据' :
+    d.valid === false ? '采集失败' : hasAlert ? '告警' : d.valid === true ? '正常' : '采集状态未知';
 }
 
 // ===== 12. Device Info Update =====
 function updateDeviceInfo() {
   var s = dataModel.static;
-  if (!s.received) return;
 
   var prevMap = { 0: 'V1.0', 17: 'V1.1', 34: 'V1.2', 51: 'V1.3' };
   var fields = {
@@ -285,17 +274,17 @@ function updateDeviceInfo() {
     mloc: s.mloc || '未知',
     mdate: s.mdate || '未知',
     prev: prevMap[s.prev] || '未知',
-    rimax: s.rimax + 'A',
-    rpmax: s.rpmax + 'W',
-    rt1: s.rt1 + '°C',
-    rt2: s.rt2 + '°C'
+    rimax: Number.isFinite(s.rimax) ? s.rimax + 'A' : '未知',
+    rpmax: Number.isFinite(s.rpmax) ? s.rpmax + 'W' : '未知',
+    rt1: Number.isFinite(s.rt1) ? s.rt1 + '°C' : '未知',
+    rt2: Number.isFinite(s.rt2) ? s.rt2 + '°C' : '未知'
   };
 
   Object.keys(fields).forEach(function(key) {
     var el = document.querySelector('.device-value[data-field="' + key + '"]');
     if (el) {
-      el.textContent = fields[key];
-      el.classList.remove('loading');
+      el.textContent = !s.received ? '不可用' : fields[key];
+      el.classList.toggle('loading', !s.received || s[key] === null);
     }
   });
 }
@@ -304,344 +293,316 @@ function updateDeviceInfo() {
 function updateStatusDetailed() {
   var d = dataModel.dynamic;
   var regs = { si: d.si, sn: d.sn, st: d.st, sf: d.sf };
-
   Object.keys(regs).forEach(function(key) {
-    var hex = '0x' + (regs[key] < 16 ? '0' : '') + (regs[key] || 0).toString(16).toUpperCase();
+    var readable = bleState.dataFresh && Number.isInteger(regs[key]);
+    var hex = readable ? '0x' + regs[key].toString(16).toUpperCase().padStart(2, '0') : '--';
     var valEl = document.getElementById('reg-val-' + key);
     var chipEl = document.getElementById('reg-chip-' + key);
     if (valEl) valEl.textContent = hex;
     if (chipEl) {
-      var isAlert = isStatusAlert(key, regs[key]);
+      var isAlert = readable && isStatusAlert(key, regs[key]);
       chipEl.classList.toggle('alert', isAlert);
       var dot = chipEl.querySelector('.chip-dot');
       var text = chipEl.querySelector('.chip-text');
-      if (dot) dot.style.background = isAlert ? 'var(--error)' : 'var(--success)';
-      if (text) text.textContent = isAlert ? '告警 (' + hex + ')' : '正常 (' + hex + ')';
+      if (dot) dot.style.background = !readable || d.valid === undefined ? 'var(--text-secondary)' : isAlert ? 'var(--error)' : 'var(--success)';
+      if (text) text.textContent = !readable ? '未知' : isAlert ? '告警 (' + hex + ')' :
+        (d.valid !== undefined ? '正常 (' : '未校验 (') + hex + ')';
     }
   });
 }
 
 // ===== 14. BLE Data Handling =====
-function parsePacket(chunk) {
-  if (!chunk || chunk.length === 0) return;
-
-  bleState.packetBuffer += chunk;
-
-  // Process all complete JSON objects in buffer
-  var processed = false;
-  while (true) {
-    var start = bleState.packetBuffer.indexOf('{');
-    if (start === -1) break;
-
-    var depth = 0;
-    var end = -1;
-    for (var i = start; i < bleState.packetBuffer.length; i++) {
-      var c = bleState.packetBuffer[i];
-      if (c === '{') depth++;
-      else if (c === '}') {
-        depth--;
-        if (depth === 0) { end = i; break; }
-      }
-    }
-    if (end === -1) break; // Incomplete JSON
-
-    var jsonStr = bleState.packetBuffer.substring(start, end + 1);
-    bleState.packetBuffer = bleState.packetBuffer.substring(end + 1);
-
-    // Remove any leading/trailing whitespace
-    jsonStr = jsonStr.trim();
-
-    try {
-      var obj = JSON.parse(jsonStr);
-      processed = true;
-      handleData(obj);
-    } catch (e) {
-      console.warn('[CRPS] JSON parse error:', e.message, '| raw:', jsonStr.substring(0, 100));
-      // Discard invalid JSON and continue
-    }
+function parsePacket(text, kind) {
+  if (typeof text !== 'string' || text.length > MAX_PACKET_BYTES ||
+      new TextEncoder().encode(text).length > MAX_PACKET_BYTES) return null;
+  try {
+    var obj = JSON.parse(text);
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+    if (obj.proto !== undefined && obj.proto !== 1) return null;
+    if (obj.valid !== undefined && typeof obj.valid !== 'boolean') return null;
+    if (obj.seq !== undefined && (!Number.isInteger(obj.seq) || obj.seq < 0 || obj.seq > 0xFFFFFFFF)) return null;
+    if (obj.ack !== undefined && (!Number.isInteger(obj.ack) || obj.ack < 0 || obj.ack > 0xFFFFFFFF)) return null;
+    var invalid = obj.valid === false;
+    if (kind === 'dynamic') {
+      if (!DYNAMIC_FIELDS.every(function(key) {
+        return Number.isFinite(obj[key]) || (invalid && obj[key] === null && key !== 'rt' && key !== 'pwr');
+      })) return null;
+      if ((obj.pwr !== 0 && obj.pwr !== 1) || !Number.isSafeInteger(obj.rt) || obj.rt < 0) return null;
+      if (!['eff','fan'].every(function(key) {
+        return (invalid && obj[key] === null) || (Number.isInteger(obj[key]) && obj[key] >= 0 && obj[key] <= (key === 'eff' ? 100 : 100000));
+      })) return null;
+      if (!['si','sn','st','sf'].every(function(key) {
+        return (invalid && obj[key] === null) || (Number.isInteger(obj[key]) && obj[key] >= 0 && obj[key] <= 0xFFFF);
+      })) return null;
+    } else if (kind === 'static') {
+      if (!STATIC_TEXT_FIELDS.every(function(key) {
+        return (invalid && obj[key] === null) || (typeof obj[key] === 'string' && obj[key].length <= 128);
+      }) || !STATIC_NUMBER_FIELDS.every(function(key) {
+        return Number.isFinite(obj[key]) || (invalid && obj[key] === null);
+      })) return null;
+      if (!(invalid && obj.prev === null) && (!Number.isInteger(obj.prev) || obj.prev < 0 || obj.prev > 255)) return null;
+    } else return null;
+    return obj;
+  } catch (e) {
+    return null;
   }
 }
 
-function handleData(obj) {
-  // Check if dynamic or static
-  if ('vin' in obj || 'vout' in obj) {
-    // Dynamic data
-    var d = dataModel.dynamic;
-    var changed = false;
-    ['vin','iin','vout','iout','pout','eff','fan','t1','t2','rt','pwr','si','sn','st','sf'].forEach(function(key) {
-      if (obj[key] !== undefined) {
-        d[key] = obj[key];
-        changed = true;
-      }
-    });
-    if (changed) {
-      // Push to chart buffers
-      var now = Date.now();
-      window.__crpsIndicatorKeys.forEach(function(key) {
-        if (obj[key] !== undefined) {
-          var buf = window.__crpsDataBuffers[key];
-          buf.push([now, obj[key]]);
-          // Keep 240 data points (60s at 4Hz)
-          if (buf.length > 240) buf.shift();
-        }
-      });
-
-      updateDataCards();
-      updateStatusSimple();
-      updateStatusDetailed();
-
-      // 同步开关位置（手动切换后 800ms 冷却期内不覆盖用户操作）
-      // 注意：仅跳过开关同步，不能提前 return 影响后续静态数据与图表更新
-      var skipSwitchSync = obj.pwr !== undefined && (Date.now() - switchState.lastManualToggle < 800);
-      if (obj.pwr !== undefined && !skipSwitchSync) {
-        var currentPos = switchState.position;
-        var targetPos = obj.pwr === 1 ? 'on' : 'off';
-        if (currentPos !== targetPos) {
-          setSwitchPosition(targetPos);
-        }
-      }
-    }
+function decodePacket(value, kind) {
+  if (!value || value.byteLength > MAX_PACKET_BYTES) return null;
+  try {
+    var bytes = value.buffer ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : new Uint8Array(value);
+    return parsePacket(new TextDecoder('utf-8', { fatal: true }).decode(bytes), kind);
+  } catch (e) {
+    return null;
   }
+}
 
-  if ('mid' in obj || 'mm' in obj || 'prev' in obj) {
-    // Static data
-    var s = dataModel.static;
-    ['mid','mm','mrev','msn','mloc','mdate','prev','rimax','rpmax','rt1','rt2'].forEach(function(key) {
-      if (obj[key] !== undefined) s[key] = obj[key];
-    });
-    if (!s.received) {
-      s.received = true;
-      bleState.staticDataReceived = true;
-      if (bleState.staticDataTimer) {
-        clearTimeout(bleState.staticDataTimer);
-        bleState.staticDataTimer = null;
+function handleData(obj, kind, session) {
+  if (!obj || session !== bleState.session || !bleState.connected) return;
+  var now = performance.now();
+  if (kind === 'dynamic') {
+    var newSample = obj.seq === undefined || obj.seq !== session.lastSequence;
+    if (newSample) session.lastDynamic = now;
+    session.lastSequence = obj.seq;
+    DYNAMIC_FIELDS.forEach(function(key) { dataModel.dynamic[key] = obj[key]; });
+    dataModel.dynamic.valid = obj.valid;
+    dataModel.dynamic.ack = obj.ack;
+    updateFreshness(session);
+    if (bleState.dataFresh) {
+      if (!session.command || (newSample && session.command.deadline !== null &&
+          (session.command.token === null || obj.ack === session.command.token) && session.command.value === obj.pwr)) {
+        session.command = null;
+        setSwitchPosition(obj.pwr === 1 ? 'on' : 'off');
+      }
+      if (newSample) {
+        var wallTime = Date.now();
+        window.__crpsIndicatorKeys.forEach(function(key) {
+          var buf = window.__crpsDataBuffers[key];
+          buf.push([wallTime, obj[key]]);
+          if (buf.length > 240) buf.shift();
+        });
+        if (window.__crpsOnDataUpdate) window.__crpsOnDataUpdate();
       }
     }
+  } else {
+    STATIC_TEXT_FIELDS.concat(STATIC_NUMBER_FIELDS).forEach(function(key) { dataModel.static[key] = obj[key]; });
+    dataModel.static.valid = obj.valid;
+    dataModel.static.received = true;
+    if (obj.seq === undefined || obj.seq !== session.lastStaticSequence) session.lastStatic = now;
+    session.lastStaticSequence = obj.seq;
     updateDeviceInfo();
   }
+  updateFreshness(session);
+}
 
-  // Update chart data callback
-  if (window.__crpsOnDataUpdate) {
-    window.__crpsOnDataUpdate();
-  }
+function resetTelemetry() {
+  DYNAMIC_FIELDS.forEach(function(key) { dataModel.dynamic[key] = null; });
+  STATIC_TEXT_FIELDS.concat(STATIC_NUMBER_FIELDS).forEach(function(key) { dataModel.static[key] = null; });
+  dataModel.dynamic.valid = null;
+  dataModel.dynamic.ack = undefined;
+  dataModel.static.valid = null;
+  dataModel.static.received = false;
+  bleState.dataFresh = false;
+  setSwitchPosition('off');
+  window.__crpsIndicatorKeys.forEach(function(key) { window.__crpsDataBuffers[key] = []; });
+  if (window.__crpsResetCharts) window.__crpsResetCharts();
+  updateDataCards();
+  updateStatusSimple();
+  updateStatusDetailed();
+  updateDeviceInfo();
 }
 
 // ===== 15. BLE Connection =====
-function startConnection() {
-  if (bleState.connecting) return;
-
-  bleState.connecting = true;
-  updateUIState('connecting');
-
-  // Show connecting overlay
-  dom.connectingView.classList.remove('hidden');
-
-  // Timeout after 10 seconds
-  bleState.connectTimeout = setTimeout(function() {
-    if (bleState.connecting) {
-      bleState.connecting = false;
-      updateUIState('disconnected');
-      dom.connectingView.classList.add('hidden');
-      showToast('error', '连接超时，请重试');
-    }
-  }, 10000);
-
-  navigator.bluetooth.requestDevice({
-    filters: [{ namePrefix: DEVICE_NAME_PREFIX }],
-    optionalServices: [BLE_SERVICE_UUID]
-  })
-  .then(function(device) {
-    bleState.device = device;
-    device.addEventListener('gattserverdisconnected', onDisconnected);
-    return device.gatt.connect();
-  })
-  .then(function(server) {
-    bleState.server = server;
-    return server.getPrimaryService(BLE_SERVICE_UUID);
-  })
-  .then(function(service) {
-    bleState.service = service;
-    return Promise.all([
-      service.getCharacteristic(BLE_CHAR_DYNAMIC),
-      service.getCharacteristic(BLE_CHAR_STATIC),
-      service.getCharacteristic(BLE_CHAR_CONTROL)
-    ]);
-  })
-  .then(function(chars) {
-    bleState.charDynamic = chars[0];
-    bleState.charStatic = chars[1];
-    bleState.charControl = chars[2];
-
-    // Helper: read characteristic value → string
-    function charValueToString(val) {
-      if (!val) return '';
-      try {
-        // DataView
-        if (val.buffer && typeof val.byteOffset === 'number' && typeof val.byteLength === 'number') {
-          var bytes = new Uint8Array(val.buffer, val.byteOffset, val.byteLength);
-          return new TextDecoder('utf-8').decode(bytes);
-        }
-        // ArrayBuffer fallback
-        if (val.byteLength !== undefined) {
-          return new TextDecoder('utf-8').decode(new Uint8Array(val));
-        }
-        return String(val);
-      } catch(e) {
-        console.warn('[CRPS] decode error:', e);
-        return '';
-      }
-    }
-
-    // 数据读取：dynamic 250ms 轮询，static 5s 轮询（轮询比 notify 更稳，且无需 startNotifications）
-    function readDynamicChar() {
-      if (!bleState.charDynamic || !bleState.connected) return;
-      bleState.charDynamic.readValue()
-        .then(function(val) {
-          var text = charValueToString(val);
-          if (text) {
-            parsePacket(text);
-          }
-        })
-        .catch(function(err) {
-          // 读失败静默处理，下次继续
-        });
-    }
-    function readStaticChar() {
-      if (!bleState.charStatic || !bleState.connected) return;
-      bleState.charStatic.readValue()
-        .then(function(val) {
-          var text = charValueToString(val);
-          if (text) {
-            parsePacket(text);
-          }
-        })
-        .catch(function(err) {
-          // 静默
-        });
-    }
-    bleState.dynPollTimer = setInterval(readDynamicChar, 250);
-    bleState.staticPollTimer = setInterval(readStaticChar, 5000);
-    // 立即读一次
-    readDynamicChar();
-    readStaticChar();
-
-    // Success
-    if (bleState.connectTimeout) {
-      clearTimeout(bleState.connectTimeout);
-      bleState.connectTimeout = null;
-    }
-    bleState.connecting = false;
-    bleState.connected = true;
-    updateUIState('connected');
-    dom.connectingView.classList.add('hidden');
-    showToast('success', '连接成功');
-
-    // Start runtime counter
-    startRuntimeCounter();
-
-    // Static data timeout (15s)
-    bleState.staticDataTimer = setTimeout(function() {
-      if (!bleState.staticDataReceived) {
-        // Show "不可用" for static data fields
-        document.querySelectorAll('.device-value').forEach(function(el) {
-          if (el.textContent === '加载中…') {
-            el.textContent = '不可用';
-            el.classList.add('loading');
-          }
-        });
-      }
-    }, 15000);
-  })
-  .catch(function(err) {
-    if (bleState.connectTimeout) {
-      clearTimeout(bleState.connectTimeout);
-      bleState.connectTimeout = null;
-    }
-    bleState.connecting = false;
+function closeSession(session) {
+  if (!session) return;
+  ['connectTimer','pollTimer','watchdogTimer','operationTimer'].forEach(function(key) {
+    clearTimeout(session[key]);
+    clearInterval(session[key]);
+    session[key] = null;
+  });
+  if (session.device && session.onDisconnect) {
+    session.device.removeEventListener('gattserverdisconnected', session.onDisconnect);
+  }
+  session.pendingPower = null;
+  session.command = null;
+  if (bleState.session === session) {
+    bleState.session = null;
     bleState.connected = false;
+    bleState.connecting = false;
+    resetTelemetry();
     updateUIState('disconnected');
     dom.connectingView.classList.add('hidden');
+  }
+  var current = bleState.session;
+  // A late attempt may share the same OS device handle as a newer connection.
+  var reused = current && current.device && session.device &&
+    (current.device === session.device || (current.device.id && current.device.id === session.device.id));
+  if (session.device && !reused) session.device.gatt.disconnect();
+}
 
-    if (err.name === 'NotFoundError') {
-      showToast('warning', '已取消选择设备');
-    } else {
-      showToast('error', '连接失败，请重试');
+async function startConnection() {
+  if (bleState.connecting || bleState.connected) return;
+  var session = {
+    device: null, charDynamic: null, charStatic: null, charControl: null,
+    lastDynamic: null, lastStatic: null, lastSequence: null, lastStaticSequence: null, nextCommandToken: 0,
+    pendingPower: null, command: null, busy: false
+  };
+  bleState.session = session;
+  bleState.connecting = true;
+  resetTelemetry();
+  updateUIState('connecting');
+  dom.connectingView.classList.remove('hidden');
+  try {
+    session.device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: DEVICE_NAME_PREFIX }],
+      optionalServices: [BLE_SERVICE_UUID]
+    });
+    if (session !== bleState.session) { closeSession(session); return; }
+    session.onDisconnect = function() { onDisconnected(session); };
+    session.device.addEventListener('gattserverdisconnected', session.onDisconnect);
+    // Allow time for the OS pairing prompt; choosing a device has no application deadline.
+    session.connectTimer = setTimeout(function() {
+      if (session !== bleState.session) return;
+      closeSession(session);
+      showToast('error', '连接超时，请重试');
+    }, 60000);
+    var server = await session.device.gatt.connect();
+    if (session !== bleState.session) { closeSession(session); return; }
+    var service = await server.getPrimaryService(BLE_SERVICE_UUID);
+    if (session !== bleState.session) { closeSession(session); return; }
+    session.charDynamic = await service.getCharacteristic(BLE_CHAR_DYNAMIC);
+    if (session !== bleState.session) { closeSession(session); return; }
+    session.charStatic = await service.getCharacteristic(BLE_CHAR_STATIC);
+    if (session !== bleState.session) { closeSession(session); return; }
+    session.charControl = await service.getCharacteristic(BLE_CHAR_CONTROL);
+    if (session !== bleState.session) { closeSession(session); return; }
+    if (session.charControl.properties && session.charControl.properties.read) {
+      await session.charControl.readValue();
+      if (session !== bleState.session) { closeSession(session); return; }
     }
-  });
+
+    clearTimeout(session.connectTimer);
+    session.connectTimer = null;
+    bleState.connecting = false;
+    bleState.connected = true;
+    session.connectedAt = performance.now();
+    session.nextStatic = session.connectedAt;
+    updateUIState('connected');
+    updateFreshness(session);
+    dom.connectingView.classList.add('hidden');
+    showToast('success', '连接成功');
+    session.watchdogTimer = setInterval(function() { updateFreshness(session); }, 1000);
+    pollSession(session);
+  } catch (err) {
+    var current = session === bleState.session;
+    closeSession(session);
+    if (current) showToast(err.name === 'NotFoundError' ? 'warning' : 'error',
+      err.name === 'NotFoundError' ? '已取消选择设备' : '连接失败，请重试');
+  }
+}
+
+async function pollSession(session) {
+  if (session !== bleState.session || !bleState.connected || session.busy) return;
+  updateFreshness(session);
+  if (session.pendingPower !== null && !bleState.dataFresh) {
+    session.pendingPower = null;
+    session.command = null;
+    showToast('error', '数据已过期，未发送指令');
+  }
+  session.busy = true;
+  var writing = session.pendingPower !== null;
+  session.operationTimer = setTimeout(function() {
+    if (session !== bleState.session) return;
+    closeSession(session);
+    showToast('error', '蓝牙操作超时，请重新连接');
+  }, writing ? 60000 : DATA_TIMEOUT_MS);
+  try {
+    if (writing) {
+      var command = session.pendingPower;
+      session.pendingPower = null;
+      var payload = new Uint8Array(command.token === null ? 1 : 5);
+      payload[0] = command.value;
+      if (command.token !== null) new DataView(payload.buffer).setUint32(1, command.token, true);
+      await session.charControl.writeValue(payload);
+      if (session !== bleState.session) return;
+      if (session.command === command) {
+        command.deadline = performance.now() + 6000;
+        showToast('success', command.value === 1 ? '开机指令已发送' : '关机指令已发送');
+      }
+    } else {
+      var value = await session.charDynamic.readValue();
+      if (session !== bleState.session) return;
+      handleData(decodePacket(value, 'dynamic'), 'dynamic', session);
+      if (session.pendingPower === null && performance.now() >= session.nextStatic) {
+        session.nextStatic = performance.now() + 5000;
+        value = await session.charStatic.readValue();
+        if (session !== bleState.session) return;
+        handleData(decodePacket(value, 'static'), 'static', session);
+      }
+    }
+  } catch (err) {
+    if (session !== bleState.session) return;
+    if (writing && session.command === command) {
+      session.command = null;
+      setSwitchPosition(dataModel.dynamic.pwr === 1 ? 'on' : 'off');
+      showToast('error', '指令发送失败');
+    }
+  } finally {
+    clearTimeout(session.operationTimer);
+    session.operationTimer = null;
+    session.busy = false;
+    if (session === bleState.session && bleState.connected) {
+      updateFreshness(session);
+      session.pollTimer = setTimeout(function() { pollSession(session); },
+        writing || session.pendingPower !== null ? 0 : 250);
+    }
+  }
 }
 
 function disconnect() {
-  if (bleState.device && bleState.connected) {
-    bleState.device.gatt.disconnect();
-  }
+  closeSession(bleState.session);
 }
 
-function onDisconnected() {
-  bleState.connected = false;
-  bleState.connecting = false;
-  bleState.staticDataReceived = false;
-  bleState.packetBuffer = '';
-  stopRuntimeCounter();
-
-  // 清理轮询定时器
-  if (bleState.dynPollTimer) {
-    clearInterval(bleState.dynPollTimer);
-    bleState.dynPollTimer = null;
-  }
-  if (bleState.staticPollTimer) {
-    clearInterval(bleState.staticPollTimer);
-    bleState.staticPollTimer = null;
-  }
-
-  if (bleState.staticDataTimer) {
-    clearTimeout(bleState.staticDataTimer);
-    bleState.staticDataTimer = null;
-  }
-
-  // Clear chart buffers
-  window.__crpsIndicatorKeys.forEach(function(key) {
-    window.__crpsDataBuffers[key] = [];
-  });
-  if (window.__crpsResetCharts) window.__crpsResetCharts();
-
-  updateUIState('disconnected');
-
-  // Reset device info to loading
-  document.querySelectorAll('.device-value').forEach(function(el) {
-    el.textContent = '加载中…';
-    el.classList.add('loading');
-  });
-
-  // Show disconnect modal
+function onDisconnected(session) {
+  if (session !== bleState.session) return;
+  closeSession(session);
   showModal(
     '连接已断开',
     '设备连接已断开，请点击下方按钮重新连接。',
-    [{ label: '重新连接', callback: function() {
-      closeModal();
-      startConnection();
-    }}]
+    [{ label: '重新连接', callback: function() { closeModal(); startConnection(); } }]
   );
-
   showToast('error', '设备已断开');
 }
 
-// ===== 16. Runtime Counter =====
-function startRuntimeCounter() {
-  if (bleState.runtimeTimer) clearInterval(bleState.runtimeTimer);
-  bleState.runtimeTimer = setInterval(function() {
-    if (bleState.connected && dataModel.dynamic.pwr === 1) {
-      dataModel.dynamic.rt++;
-      var rtEl = document.querySelector('[data-field="rt"]');
-      if (rtEl) rtEl.textContent = formatRuntime(dataModel.dynamic.rt);
-    }
-  }, 1000);
-}
-
-function stopRuntimeCounter() {
-  if (bleState.runtimeTimer) {
-    clearInterval(bleState.runtimeTimer);
-    bleState.runtimeTimer = null;
+// ===== 16. Data Freshness =====
+function updateFreshness(session) {
+  if (session !== bleState.session || !bleState.connected) return;
+  var now = performance.now();
+  var wasFresh = bleState.dataFresh;
+  bleState.dataFresh = session.lastDynamic !== null && now - session.lastDynamic < DATA_TIMEOUT_MS;
+  if (wasFresh && !bleState.dataFresh && window.__crpsOnDataUpdate) window.__crpsOnDataUpdate();
+  var expired = now - (session.lastDynamic === null ? session.connectedAt : session.lastDynamic) >= DATA_TIMEOUT_MS;
+  dom.statusText.textContent = bleState.dataFresh ? '已连接' : expired ? '数据已过期' : '已连接 · 等待数据';
+  dom.statusDot.className = bleState.dataFresh ? 'status-dot connected' : expired ? 'status-dot alert' : 'status-dot connecting';
+  if (session.command && session.command.deadline !== null && now >= session.command.deadline) {
+    session.command = null;
+    setSwitchPosition(dataModel.dynamic.pwr === 1 ? 'on' : 'off');
+    showToast('error', '设备状态未确认，请检查电源后重试');
   }
+  var disabled = !bleState.dataFresh;
+  dom.powerSwitch.classList.toggle('disabled', disabled);
+  dom.powerSwitch.setAttribute('aria-disabled', String(disabled));
+  dom.powerSwitch.setAttribute('aria-busy', String(session.command !== null));
+  var staticTimeout = session.lastStaticSequence == null ? STATIC_TIMEOUT_MS : 45000;
+  if (now - (session.lastStatic === null ? session.connectedAt : session.lastStatic) >= staticTimeout) {
+    dataModel.static.received = false;
+    updateDeviceInfo();
+  }
+  updateDataCards();
+  updateStatusSimple();
+  updateStatusDetailed();
+  if (expired) dom.statusBarText.textContent = '数据已过期';
 }
 
 // ===== 17. UI State Update =====
@@ -704,7 +665,7 @@ function updateUIState(state) {
 }
 
 // ===== 18. Power Switch (Apple-style Toggle) =====
-var switchState = { position: 'off', lastManualToggle: 0 };
+var switchState = { position: 'off' };
 
 function setSwitchPosition(pos) {
   switchState.position = pos;
@@ -712,15 +673,16 @@ function setSwitchPosition(pos) {
 }
 
 function sendPowerCommand(value) {
-  if (!bleState.charControl || !bleState.connected) return;
-  var data = new Uint8Array([value]);
-  bleState.charControl.writeValue(data)
-    .then(function() {
-      showToast('success', value === 1 ? '开机指令已发送' : '关机指令已发送');
-    })
-    .catch(function() {
-      showToast('error', '指令发送失败');
-    });
+  var session = bleState.session;
+  if (!session || !bleState.connected || !bleState.dataFresh ||
+      (value !== 0 && value !== 1)) return;
+  session.nextCommandToken = session.nextCommandToken % 0xFFFFFFFF + 1;
+  session.command = { value: value, deadline: null, token: dataModel.dynamic.ack === undefined ? null : session.nextCommandToken };
+  session.pendingPower = session.command;
+  setSwitchPosition(value === 1 ? 'on' : 'off');
+  updateFreshness(session);
+  clearTimeout(session.pollTimer);
+  pollSession(session);
 }
 
 // Click to toggle
@@ -728,9 +690,7 @@ dom.powerSwitch.addEventListener('click', function(e) {
   if (dom.powerSwitch.classList.contains('disabled')) return;
 
   var newPos = switchState.position === 'on' ? 'off' : 'on';
-  setSwitchPosition(newPos);
   sendPowerCommand(newPos === 'on' ? 1 : 0);
-  switchState.lastManualToggle = Date.now();
 });
 
 // ===== 20. First-visit Modal =====
@@ -808,5 +768,6 @@ window.addEventListener('resize', function() {
 });
 
 // ===== 24. Init =====
+resetTelemetry();
 updateUIState('disconnected');
 moveTabIndicator(false);
